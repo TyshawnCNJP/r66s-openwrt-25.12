@@ -51,6 +51,11 @@ jobs:
         working-directory: ./openwrt
         run: |
           ./scripts/feeds update -a
+          # 升级 Go 工具链至最新主干版本以匹配 Xray-core 26.11.9 (Go >= 1.27)
+          rm -rf feeds/packages/lang/golang
+          git clone --depth=1 https://github.com/openwrt/packages.git /tmp/openwrt-packages-master
+          cp -r /tmp/openwrt-packages-master/lang/golang feeds/packages/lang/golang
+          rm -rf /tmp/openwrt-packages-master
           # 移除官方源中旧版代理核心，确保使用 passwall_packages 的最新适配版本
           rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,v2ray-plugin,xray-plugin,geoview,shadow-tls}
           ./scripts/feeds install -a

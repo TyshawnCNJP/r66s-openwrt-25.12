@@ -1,0 +1,149 @@
+name: Build OpenWrt 25.12 for Lunzn FastRhino R66S
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_debug:
+        description: '开启 SSH 远程调试 (一般选 false 即可)'
+        required: true
+        default: 'false'
+
+env:
+  REPO_URL: https://github.com/openwrt/openwrt.git
+  REPO_BRANCH: openwrt-25.12
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize build environment
+        run: |
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib \
+            g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 \
+            libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool \
+            llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+            python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs \
+            upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          df -hT
+
+      - name: Clone OpenWrt 25.12 source code
+        run: |
+          git clone --depth=1 -b $REPO_BRANCH $REPO_URL openwrt
+          cd openwrt
+          # 注入 Passwall 官方源（置于 feeds 顶部以优先解析依赖）
+          sed -i '1i src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main' feeds.conf.default
+          sed -i '2i src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' feeds.conf.default
+
+      - name: Update & Install feeds
+        working-directory: ./openwrt
+        run: |
+          ./scripts/feeds update -a
+          # 移除官方源中旧版代理核心，确保使用 passwall_packages 的最新适配版本
+          rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,v2ray-plugin,xray-plugin,geoview,shadow-tls}
+          ./scripts/feeds install -a
+
+      - name: Configure R66S & Minimalist Packages
+        working-directory: ./openwrt
+        run: |
+          cat << 'EOF' > .config
+          # === 目标平台: Lunzn FastRhino R66S (RK3568 ARMv8) ===
+          CONFIG_TARGET_rockchip=y
+          CONFIG_TARGET_rockchip_armv8=y
+          CONFIG_TARGET_rockchip_armv8_DEVICE_lunzn_fastrhino-r66s=y
+
+          # === 分区与镜像格式 (ext4 方便 TF 卡直接扩容) ===
+          CONFIG_TARGET_ROOTFS_EXT4FS=y
+          CONFIG_TARGET_ROOTFS_SQUASHFS=n
+          CONFIG_TARGET_ROOTFS_PARTSIZE=512
+
+          # === LuCI 基础与中文界面 ===
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl-openssl=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+          CONFIG_PACKAGE_luci-i18n-package-manager-zh-cn=y
+
+          # === 网络核心与原生 dnsmasq-full ===
+          CONFIG_PACKAGE_dnsmasq=n
+          CONFIG_PACKAGE_dnsmasq-full=y
+          CONFIG_PACKAGE_dnsmasq_full_dhcp=y
+          CONFIG_PACKAGE_dnsmasq_full_dhcpv6=y
+          CONFIG_PACKAGE_dnsmasq_full_dnssec=y
+          CONFIG_PACKAGE_dnsmasq_full_ipset=y
+          CONFIG_PACKAGE_dnsmasq_full_nftset=y
+          CONFIG_PACKAGE_kmod-nft-socket=y
+          CONFIG_PACKAGE_kmod-nft-tproxy=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_ca-bundle=y
+
+          # === TF 卡无损扩容与基础工具 ===
+          CONFIG_PACKAGE_parted=y
+          CONFIG_PACKAGE_losetup=y
+          CONFIG_PACKAGE_resize2fs=y
+          CONFIG_PACKAGE_htop=y
+
+          # === Passwall 及双核心 (Xray + Sing-box) ===
+          CONFIG_PACKAGE_luci-app-passwall=y
+          CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Sing-Box=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_ChinaDNS_NG=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Geoview=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria=n
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Libev_Client=n
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client=n
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Trojan_Plus=n
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Plugin=n
+          EOF
+
+          # 预置静态网关 IP (192.168.50.2) 及默认网关/DNS (指向主路由 192.168.50.1)
+          mkdir -p files/etc/uci-defaults
+          cat << 'EOF' > files/etc/uci-defaults/99-custom-network
+          uci set network.lan.ipaddr='192.168.50.2'
+          uci set network.lan.netmask='255.255.255.0'
+          uci set network.lan.gateway='192.168.50.1'
+          uci add_list network.lan.dns='192.168.50.1'
+          uci set dhcp.lan.ignore='1'
+          uci commit network
+          uci commit dhcp
+          exit 0
+          EOF
+
+          make defconfig
+
+      - name: Download packages
+        working-directory: ./openwrt
+        run: |
+          make download -j$(nproc)
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile OpenWrt 25.12
+        working-directory: ./openwrt
+        run: |
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Organize artifacts
+        run: |
+          mkdir -p firmware
+          cp openwrt/bin/targets/rockchip/armv8/*lunzn_fastrhino-r66s* firmware/
+          cp openwrt/bin/targets/rockchip/armv8/*.manifest firmware/
+          ls -lh firmware/
+
+      - name: Upload Firmware Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: R66S-OpenWrt-25.12-Firmware
+          path: firmware/
+          retention-days: 14

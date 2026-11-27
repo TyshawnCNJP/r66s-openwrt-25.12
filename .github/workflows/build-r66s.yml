@@ -41,9 +41,11 @@ jobs:
           sudo -E apt-get -qq clean
           df -hT
 
-      - name: Clone OpenWrt 25.12 source code
+      - name: Clone OpenWrt Latest 25.12 Release Tag
         run: |
-          git clone --depth=1 -b $REPO_BRANCH $REPO_URL openwrt
+          LATEST_TAG=$(git ls-remote --tags --refs $REPO_URL 'refs/tags/v25.12.*' | awk -F'/' '{print $3}' | sort -V | tail -n 1)
+          echo "自动匹配到最新官方正式版标签: $LATEST_TAG"
+          git clone --depth=1 -b "$LATEST_TAG" $REPO_URL openwrt
           cd openwrt
           # 注入 Passwall 官方源（置于 feeds 顶部以优先解析依赖）
           sed -i '1i src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main' feeds.conf.default
@@ -99,6 +101,7 @@ jobs:
           CONFIG_PACKAGE_dnsmasq_full_nftset=y
           CONFIG_PACKAGE_kmod-nft-socket=y
           CONFIG_PACKAGE_kmod-nft-tproxy=y
+          CONFIG_PACKAGE_kmod-tcp-bbr=y
           CONFIG_PACKAGE_curl=y
           CONFIG_PACKAGE_ca-bundle=y
 
@@ -186,10 +189,15 @@ jobs:
 
           uci commit system
 
-          # 8. 修正 OpenWrt 25.12-SNAPSHOT 默认软件源路径并剔除无效第三方源条目
-          sed -i 's|releases/25.12-SNAPSHOT/targets/|snapshots/targets/|g' /etc/apk/repositories.d/*
-          sed -i 's|releases/25.12-SNAPSHOT/packages/|snapshots/packages/|g' /etc/apk/repositories.d/*
+          # 8. 剔除无效的第三方源条目（正式版官方源本身可直接使用）
           sed -i '/passwall_/d' /etc/apk/repositories.d/*
+
+          # 9. 开启 TCP BBR 拥塞控制与 fq 队列调度（优化代理隧道高延迟吞吐）
+          cat << 'SYSCTL' >> /etc/sysctl.conf
+          net.core.default_qdisc=fq
+          net.ipv4.tcp_congestion_control=bbr
+          SYSCTL
+          sysctl -p
 
           exit 0
           EOF

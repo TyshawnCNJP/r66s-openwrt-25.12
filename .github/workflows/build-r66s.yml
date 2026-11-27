@@ -133,12 +133,12 @@ jobs:
           uci set luci.main.lang='zh_cn'
           uci commit luci
 
-          # 2. 双网口合并入 br-lan（无论网线插 WAN 还是 LAN 丝印口均生效）
+          # 2. 单口直通优化：删除默认 wan/wan6 与 br-lan 软件网桥，将 lan 直接绑定至机身 LAN 丝印口 (eth1)
+          # 物理丝印 WAN 口 (eth0) 将处于未激活状态，彻底隔离且消除网桥二层转发开销
           uci -q delete network.wan
           uci -q delete network.wan6
-          uci -q delete network.@device[0].ports
-          uci add_list network.@device[0].ports='eth0'
-          uci add_list network.@device[0].ports='eth1'
+          uci -q delete network.@device[0]
+          uci set network.lan.device='eth1'
 
           # 3. 旁路由静态网络配置（匹配华硕主路由 192.168.50.1）
           uci set network.lan.proto='static'
@@ -149,7 +149,7 @@ jobs:
           uci add_list network.lan.dns='192.168.50.1'
           uci set network.lan.delegate='0'
 
-          # 4. 开启多核数据包转向 (Packet Steering) 跑满千兆以上宽带
+          # 4. 开启多核数据包转向 (Packet Steering)
           uci set network.globals.packet_steering='1'
           uci commit network
 
@@ -178,21 +178,6 @@ jobs:
           uci set system.led_eth1_act.trigger='netdev'
           uci set system.led_eth1_act.dev='eth1'
           uci set system.led_eth1_act.mode='tx rx'
-
-          # 设置 eth0 指示灯（0号灯常亮表示连接，1号灯闪烁表示数据活动）
-          uci set system.led_eth0_link=led
-          uci set system.led_eth0_link.name='eth0-link'
-          uci set system.led_eth0_link.sysfs='enP2p33s0-0::lan'
-          uci set system.led_eth0_link.trigger='netdev'
-          uci set system.led_eth0_link.dev='eth0'
-          uci set system.led_eth0_link.mode='link'
-
-          uci set system.led_eth0_act=led
-          uci set system.led_eth0_act.name='eth0-act'
-          uci set system.led_eth0_act.sysfs='enP2p33s0-1::lan'
-          uci set system.led_eth0_act.trigger='netdev'
-          uci set system.led_eth0_act.dev='eth0'
-          uci set system.led_eth0_act.mode='tx rx'
 
           uci commit system
 
